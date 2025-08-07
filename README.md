@@ -30,4 +30,6 @@ You can use it by adding the following code to the planet file:
 - `water drag coefficient`: Coefficient of water drag.
 - `water drag multiplier`: Multiplier of water drag.
 
+Additionally, you also need to manually create a gas giant to present water
+
 I know the water physics may not be very realistic, but this is the best way to ensure no abnormalities.
