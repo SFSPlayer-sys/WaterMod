@@ -11,44 +11,48 @@ namespace WaterMod
         public bool enableDebugLogs = false;
         
         // 浮力相关参数
-        public float globalBuoyancyMultiplier = 0.005f;      
+        public float globalBuoyancyMultiplier = 0.0045f;      
         public float defaultBuoyancyIndex = 1.02f;         
         public float engineBuoyancyIndex = 0.05f;
         public float boosterBuoyancyIndex = 0.1f;
-        public float resourceBuoyancyIndex = 1.1f;
-        public float aeroBuoyancyIndex = 0.8f;  
-        public float fairingBuoyancyIndex = 0.5f;  
+        public float resourceBuoyancyIndex = 1.2f;
+        public float aeroBuoyancyIndex = 1.2f;  
+        public float fairingBuoyancyIndex = 1.5f;  
         public float separatorBuoyancyIndex = 1.15f;
         public float dockingPortBuoyancyIndex = 1.1f;
-        public float rcsBuoyancyIndex = 1.05f;
+        public float rcsBuoyancyIndex = 1.1f;
         public float wheelBuoyancyIndex = 1.02f;
-        public float crewBuoyancyIndex = 1.1f;
-        public float toggleBuoyancyIndex = 1.02f;
-        public float lesBuoyancyIndex = 1f;
-        public float particleBuoyancyIndex = 1.1f;
+        public float crewBuoyancyIndex = 1.15f;
+        public float toggleBuoyancyIndex = 1.1f;
+        public float lesBuoyancyIndex = 1.05f;
+        public float particleBuoyancyIndex = 1.3f;
         public float interiorBuoyancyIndex = 1.02f;
         public float activeBuoyancyIndex = 1.02f;
 
         // 水面高度与密度
         public double defaultSeaLevelHeight = 50.0;
-        public double defaultWaterDensity = 100.0;
+        public double defaultWaterDensity = 75.0;
 
         // 空气阻力密度乘数（保留用于兼容性）
         public float waterDensityMultiplier = 800.0f;        // 水密度相对于空气的倍数
 
-        // 水下冷却相关
-        public float underwaterCoolingRate = 10f;        // 水下冷却速率 (度/秒)
+        // 水撞击爆炸/解体相关
+        public bool enableWaterExplosion = true;          // 是否启用撞击水爆炸
+        public bool enableWaterDisintegration = true;     // 是否启用撞击水解体
+        public float waterExplosionThreshold = 200;      // 水撞击爆炸阈值 (m/s)
+        public float waterDisintegrationThreshold = 100f; // 水撞击解体阈值 (m/s)
+        public float baseDetachmentProbability = 0.2f;    // 部件基础脱离概率 (0-1)
 
         // 浮力矩相关
         public float globalBuoyancyTorqueCoefficient = 0.8f; // 浮力矩全局系数
 
-        public float formDragCoefficient = 0.6f;          // 形状阻力系数
-        public float dampingCoefficient = 0.1f;           // 阻尼系数
-        public float interferenceDragCoefficient = 0.3f;  // 部件间干扰阻力系数
+        public float formDragCoefficient = 0.1f;          // 形状阻力系数（降低横向纵向阻力）
+        public float dampingCoefficient = 3f;           // 阻尼系数（提高）
+        public float interferenceDragCoefficient = 1.5f;  // 部件间干扰阻力系数（提高）
         
         // 角阻力
-        public float angularDragCoefficient = 0.4f;       // 角阻力系数
-        public float maxAngularDrag = 50f;                // 最大角阻力
+        public float angularDragCoefficient = 1f;       // 角阻力系数
+        public float maxAngularDrag = 100f;                // 最大角阻力
         
         // 形状阻力详细设置
         public float streamlinedDragCoefficient = 0.2f;   // 流线型阻力系数
@@ -71,7 +75,7 @@ namespace WaterMod
         
     }
 
-    // 新增部件强度配置类
+    // 部件强度配置类
     [Serializable]
     public class PartStrengthSettings
     {

@@ -12,7 +12,7 @@ namespace WaterMod
         public override string DisplayName => "WaterMod";
         public override string Author => "SFSGamer";
         public override string MinimumGameVersionNecessary => "1.5.10.2";
-        public override string ModVersion => "1.0.0";
+        public override string ModVersion => "2.0.0";
         public override string Description => "Adds water system to planets";
 
         private Harmony patcher;
