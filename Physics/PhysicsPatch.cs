@@ -26,37 +26,56 @@ namespace WaterMod
             WorldLocation rocketLocation = rocket.location;
             if (rocketLocation == null) return;
             
-            // 检查火箭是否有任何部件在水中
-            if (!buoyancySystem.HasAnyPartInWater(rocket, rocketLocation)) return;
+            // 检查火箭是否有任何部件在水中（浮力对所有有部件在水中的火箭都应用）
+            bool hasPartsInWater = buoyancySystem.HasAnyPartInWater(rocket, rocketLocation);
             
-            // 为每个部件单独应用浮力
-            foreach (Part part in rocket.partHolder.parts)
+            if (hasPartsInWater)
             {
-                if (part == null) continue;
-                
-                // 计算并应用浮力
-                Vector2 buoyancyForce = buoyancySystem.CalculateBuoyancyForce(part, rocketLocation);
-                if (buoyancyForce != Vector2.zero)
+                // 为每个部件单独应用浮力
+                foreach (Part part in rocket.partHolder.parts)
                 {
-                    // 在部件位置施加浮力
-                    rocket.rb2d.AddForceAtPosition(buoyancyForce, part.transform.position, ForceMode2D.Force);
-                
-                    if (WaterSettingsManager.settings.enableDebugLogs)
+                    if (part == null) continue;
+                    
+                    // 计算并应用浮力
+                    Vector2 buoyancyForce = buoyancySystem.CalculateBuoyancyForce(part, rocketLocation);
+                    if (buoyancyForce != Vector2.zero)
                     {
-                        Debug.Log($"[WaterMod] Applied buoyancy force to part {part.name}: {buoyancyForce} at position {part.transform.position}");
+                        // 在部件位置施加浮力
+                        rocket.rb2d.AddForceAtPosition(buoyancyForce, part.transform.position, ForceMode2D.Force);
+                    
+                        if (WaterSettingsManager.settings.enableDebugLogs)
+                        {
+                            Debug.Log($"[WaterMod] Applied buoyancy force to part {part.name}: {buoyancyForce} at position {part.transform.position}");
+                        }
                     }
                 }
             }
             
-            // 计算并应用角阻力
-            float angularDrag = buoyancySystem.CalculateAngularDrag(rocket, rocketLocation);
-            if (angularDrag != 0f)
+            // 只对真正在水下的火箭（中心在水下）应用水下阻力
+            // 这确保水上火箭不会受到水下阻力的影响
+            if (buoyancySystem.IsInWater(rocketLocation))
             {
-                rocket.rb2d.AddTorque(angularDrag, ForceMode2D.Force);
-                
-                if (WaterSettingsManager.settings.enableDebugLogs)
+                // 计算并应用水下平移阻力（横向/纵向阻力）
+                Vector2 linearDrag = buoyancySystem.CalculateLinearDrag(rocket, rocketLocation);
+                if (linearDrag != Vector2.zero)
                 {
-                    Debug.Log($"[WaterMod] Applied angular drag: {angularDrag}");
+                    rocket.rb2d.AddForce(linearDrag, ForceMode2D.Force);
+                    if (WaterSettingsManager.settings.enableDebugLogs)
+                    {
+                        Debug.Log($"[WaterMod] Applied linear water drag: {linearDrag}");
+                    }
+                }
+
+                // 计算并应用角阻力
+                float angularDrag = buoyancySystem.CalculateAngularDrag(rocket, rocketLocation);
+                if (angularDrag != 0f)
+                {
+                    rocket.rb2d.AddTorque(angularDrag, ForceMode2D.Force);
+                    
+                    if (WaterSettingsManager.settings.enableDebugLogs)
+                    {
+                        Debug.Log($"[WaterMod] Applied angular drag: {angularDrag}");
+                    }
                 }
             }
             
