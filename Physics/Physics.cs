@@ -7,6 +7,9 @@ using SFS.World;
 using SFS.World.Drag;
 using SFS.IO;
 using SFS.Parsers.Json;
+using UnityEngine.SceneManagement;
+using System.Threading.Tasks;
+using System.Threading;
 
 namespace WaterMod
 {
@@ -32,6 +35,143 @@ namespace WaterMod
             }
         }
 
+        // 后台干扰阻力计算器（只做纯数学，避免访问Unity对象）
+        private static class InterferenceWorker
+        {
+            struct PartLite
+            {
+                public Vector2 worldPos;
+                public bool isAero;
+                public bool isValid;
+            }
+
+            private static readonly object jobLock = new object();
+            private static volatile bool jobRunning = false;
+            private static float latestTotalInterferenceBase = 0f; // 未乘系数/密度，仅几何与速度相关部分
+            private static int latestFrameComputed = -1;
+
+            public static void RequestComputation(Rocket rocket, WorldLocation location, Vector2 velocity)
+            {
+                if (rocket?.partHolder?.parts == null) return;
+                if (velocity.sqrMagnitude < 0.0001f) return;
+
+                // 限制同一帧只启动一次
+                int currentFrame = Time.frameCount;
+                if (latestFrameComputed == currentFrame) return;
+
+                lock (jobLock)
+                {
+                    if (jobRunning) return;
+                    jobRunning = true;
+
+                    // 快照必要数据（只能在主线程读取Unity对象）
+                    var partsSrc = rocket.partHolder.parts;
+                    int count = partsSrc.Count;
+                    PartLite[] snapshot = new PartLite[count];
+                    for (int i = 0; i < count; i++)
+                    {
+                        var p = partsSrc[i];
+                        if (p == null)
+                        {
+                            snapshot[i] = default;
+                            continue;
+                        }
+
+                        bool isAero = false;
+                        var aeroModules = p.GetModules<AeroModule>();
+                        if (aeroModules != null && aeroModules.Length > 0) isAero = true;
+
+                        snapshot[i] = new PartLite
+                        {
+                            worldPos = p.transform.position,
+                            isAero = isAero,
+                            isValid = true
+                        };
+                    }
+
+                    Vector2 vel = velocity; // 复制值类型
+                    float wakeEffect = WaterSettingsManager.settings.wakeEffectFactor;
+
+                    Task.Run(() =>
+                    {
+                        try
+                        {
+                            int n = snapshot.Length;
+                            // 速度幅值（保持与原公式一致）
+                            float velMag = vel.magnitude;
+                            if (velMag < 0.0001f)
+                            {
+                                latestTotalInterferenceBase = 0f;
+                                latestFrameComputed = currentFrame;
+                            }
+                            else
+                            {
+                                int workerCount = System.Math.Max(1, System.Environment.ProcessorCount);
+                                var tasks = new System.Threading.Tasks.Task[workerCount];
+                                double[] partialSums = new double[workerCount];
+
+                                // 按 i 维平均分块
+                                int chunk = (n + workerCount - 1) / workerCount;
+                                const float threshold = 10f;
+                                float thresholdSqr = threshold * threshold;
+
+                                for (int w = 0; w < workerCount; w++)
+                                {
+                                    int start = w * chunk;
+                                    int end = System.Math.Min(n, start + chunk);
+                                    int wi = w;
+                                    tasks[w] = System.Threading.Tasks.Task.Factory.StartNew(() =>
+                                    {
+                                        double local = 0d;
+                                        for (int i = start; i < end; i++)
+                                        {
+                                            if (!snapshot[i].isValid || snapshot[i].isAero) continue;
+                                            var pi = snapshot[i].worldPos;
+                                            for (int j = i + 1; j < n; j++)
+                                            {
+                                                if (!snapshot[j].isValid || snapshot[j].isAero) continue;
+                                                var pj = snapshot[j].worldPos;
+                                                float dx = pj.x - pi.x;
+                                                float dy = pj.y - pi.y;
+                                                float dsq = dx * dx + dy * dy;
+                                                if (dsq > thresholdSqr) continue;
+                                                float dist = (float)System.Math.Sqrt(dsq);
+                                                float interferenceFactor = 1f / (1f + dist);
+                                                float interference = velMag * interferenceFactor * wakeEffect;
+                                                local += System.Math.Abs(interference);
+                                            }
+                                        }
+                                        partialSums[wi] = local;
+                                    }, System.Threading.CancellationToken.None, System.Threading.Tasks.TaskCreationOptions.LongRunning, System.Threading.Tasks.TaskScheduler.Default);
+                                }
+
+                                System.Threading.Tasks.Task.WaitAll(tasks);
+                                double total = 0d;
+                                for (int w = 0; w < workerCount; w++) total += partialSums[w];
+                                latestTotalInterferenceBase = (float)total;
+                                latestFrameComputed = currentFrame;
+                            }
+                        }
+                        catch { /* 忽略后台异常，保持稳定 */ }
+                        finally
+                        {
+                            lock (jobLock)
+                            {
+                                jobRunning = false;
+                            }
+                        }
+                    });
+                }
+            }
+
+            public static bool TryGetLatest(out float totalBaseMagnitude)
+            {
+                totalBaseMagnitude = latestTotalInterferenceBase;
+                // 允许跨帧复用最近结果，避免偶发空窗
+                return latestFrameComputed >= 0;
+            }
+        }
+
         // 获取重力加速度
         private float GetGravity(WorldLocation location)
         {
@@ -43,6 +183,28 @@ namespace WaterMod
         {
             _main = this;
             LoadBuoyancySettings();
+            
+            // 监听场景加载事件
+            SceneManager.sceneLoaded += OnSceneLoaded;
+        }
+        
+        private void OnDestroy()
+        {
+            // 取消监听场景加载事件
+            SceneManager.sceneLoaded -= OnSceneLoaded;
+        }
+        
+        private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+        {
+            // 仅在进入世界场景时重新读取配置（进入世界）
+            if (!string.IsNullOrEmpty(scene.name) && (scene.name.Equals("World", StringComparison.OrdinalIgnoreCase) || scene.name.Contains("World")))
+            {
+                LoadBuoyancySettings();
+                if (WaterSettingsManager.settings != null && WaterSettingsManager.settings.enableDebugLogs)
+                {
+                    Debug.Log($"[WaterMod] World scene loaded: {scene.name}, reloaded buoyancy settings");
+                }
+            }
         }
 
         private void LoadBuoyancySettings()
@@ -131,8 +293,26 @@ namespace WaterMod
             float buoyancyMultiplier = GetBuoyancyMultiplier(part);
             buoyancyForce *= buoyancyMultiplier * WaterSettingsManager.settings.globalBuoyancyMultiplier;
             
-            // 浮力方向向上
-            Vector2 buoyancyVector = Vector2.up * buoyancyForce;
+            // 浮力方向应与重力方向相反（基于当前位置的行星引力方向）
+            Vector2 buoyancyDir = Vector2.up;
+            try
+            {
+                if (location?.planet?.Value != null)
+                {
+                    var planet = location.planet.Value;
+                    // 使用全局位置计算引力方向
+                    var pos = location.position.Value; // Double2
+                    var g = planet.GetGravity(pos);     // Double2，引力指向行星中心
+                    Vector2 gVec = new Vector2((float)g.x, (float)g.y);
+                    if (gVec.sqrMagnitude > 1e-8f)
+                    {
+                        buoyancyDir = -gVec.normalized; // 取反即为“向外/向上”
+                    }
+                }
+            }
+            catch { }
+
+            Vector2 buoyancyVector = buoyancyDir * buoyancyForce;
             
             if (WaterSettingsManager.settings.enableDebugLogs)
             {
@@ -245,7 +425,22 @@ namespace WaterMod
             Vector2 dampingForce = CalculateDampingForce(rocket, location, velocity);
             
             // 3. 部件间干扰阻力
-            Vector2 interferenceDrag = CalculateInterferenceDrag(rocket, location, velocity);
+            InterferenceWorker.RequestComputation(rocket, location, velocity);
+            Vector2 interferenceDrag = Vector2.zero;
+            if (InterferenceWorker.TryGetLatest(out float latestBase))
+            {
+                // 与原公式保持一致：方向取反速度方向，幅值乘配置与密度
+                string planetNameForInterf = location?.planet?.Value?.codeName;
+                double currentWaterDensityForInterf = waterDensity;
+                if (!string.IsNullOrEmpty(planetNameForInterf))
+                {
+                    WaterData waterDataForInterf = WaterManager.GetPlanetWater(planetNameForInterf);
+                    if (waterDataForInterf != null && waterDataForInterf.waterDensity > 0)
+                        currentWaterDensityForInterf = waterDataForInterf.waterDensity;
+                }
+                float coeff = WaterSettingsManager.settings.interferenceDragCoefficient * (float)currentWaterDensityForInterf;
+                interferenceDrag = dragDirection * latestBase * coeff;
+            }
             
             totalDrag = formDrag + dampingForce + interferenceDrag;
             
@@ -295,8 +490,11 @@ namespace WaterMod
                 float dragCoefficient = GetDragCoefficientByReynolds(reynoldsNumber);
                 float shapeModifier = GetShapeDragModifier(part);
                 
-                float partFormDrag = 0.5f * (float)currentWaterDensity * velocityMagnitude * velocityMagnitude * 
-                                   frontalArea * dragCoefficient * shapeModifier * 
+                float sfsDensityScale = 0.001f; 
+                float sfsAreaScale = 0.01f;     
+                float partFormDrag = 0.5f * (float)currentWaterDensity * sfsDensityScale * 
+                                   velocityMagnitude * velocityMagnitude * 
+                                   frontalArea * sfsAreaScale * dragCoefficient * shapeModifier * 
                                    WaterSettingsManager.settings.formDragCoefficient;
                 
                 totalFormDrag += partFormDrag;
@@ -309,9 +507,25 @@ namespace WaterMod
         private Vector2 CalculateDampingForce(Rocket rocket, WorldLocation location, Vector2 velocity)
         {
             float velocityMagnitude = velocity.magnitude;
+            
+            // 如果速度非常小，直接返回零（避免除零错误）
+            if (velocityMagnitude < 0.001f) return Vector2.zero;
+            
             Vector2 dampingDirection = -velocity.normalized;
             
             float totalDamping = 0f;
+            
+            // 基于当前星球的水密度进行缩放
+            string planetNameForDamping = location?.planet?.Value?.codeName;
+            double currentWaterDensityForDamping = waterDensity; // 默认值
+            if (!string.IsNullOrEmpty(planetNameForDamping))
+            {
+                WaterData waterDataForDamping = WaterManager.GetPlanetWater(planetNameForDamping);
+                if (waterDataForDamping != null && waterDataForDamping.waterDensity > 0)
+                {
+                    currentWaterDensityForDamping = waterDataForDamping.waterDensity;
+                }
+            }
             
             foreach (Part part in rocket.partHolder.parts)
             {
@@ -329,14 +543,25 @@ namespace WaterMod
                 float partVolume = GetPartVolume(part);
                 float underwaterRatio = GetPartUnderwaterRatio(part, location);
                 
+                // 基础阻尼力：与速度成正比
                 float partDamping = velocityMagnitude * partVolume * underwaterRatio * 
-                                  WaterSettingsManager.settings.dampingCoefficient;
+                                  WaterSettingsManager.settings.dampingCoefficient * (float)currentWaterDensityForDamping;
+                
+                // 在低速时增加额外的粘性阻尼，确保火箭能够稳定下来
+                // 当速度小于0.5m/s时，增加额外的阻尼系数
+                if (velocityMagnitude < 0.5f)
+                {
+                    // 使用平方根函数在低速时增加阻尼，使火箭更容易停止
+                    float lowSpeedMultiplier = 1f + (1f - velocityMagnitude / 0.5f) * 2f; // 在速度为0时，倍增系数为3
+                    partDamping *= lowSpeedMultiplier;
+                }
                 
                 totalDamping += partDamping;
             }
             
-            // 限制最大阻尼力
-            totalDamping = Mathf.Min(totalDamping, WaterSettingsManager.settings.maxDampingForce);
+            // 限制最大阻尼力（提高限制，确保能够有效停止运动）
+            float maxDamping = Mathf.Max(WaterSettingsManager.settings.maxDampingForce, 50f);
+            totalDamping = Mathf.Min(totalDamping, maxDamping);
             
             return dampingDirection * totalDamping;
         }
@@ -344,43 +569,38 @@ namespace WaterMod
         // 计算部件间干扰阻力
         private Vector2 CalculateInterferenceDrag(Rocket rocket, WorldLocation location, Vector2 velocity)
         {
+            // 旧同步实现保留作为回退，但默认不再使用（由后台计算替代）
             float velocityMagnitude = velocity.magnitude;
+            if (velocityMagnitude < 0.0001f) return Vector2.zero;
             Vector2 dragDirection = -velocity.normalized;
-            
-            float totalInterferenceDrag = 0f;
-            
-            Part[] parts = rocket.partHolder.parts.ToArray();
-            
-            for (int i = 0; i < parts.Length; i++)
+            float total = 0f;
+            var parts = rocket.partHolder.parts;
+            int n = parts.Count;
+            for (int i = 0; i < n; i++)
             {
-                if (parts[i] == null) continue;
-                
-                // 检查是否是空气动力部件
-                var aeroModules = parts[i].GetModules<AeroModule>();
-                if (aeroModules != null && aeroModules.Length > 0)
+                var pi = parts[i];
+                if (pi == null) continue;
+                var aero1 = pi.GetModules<AeroModule>();
+                if (aero1 != null && aero1.Length > 0) continue;
+                for (int j = i + 1; j < n; j++)
                 {
-                    // 空气动力部件不计算干扰阻力
-                    continue;
-                }
-                
-                for (int j = i + 1; j < parts.Length; j++)
-                {
-                    if (parts[j] == null) continue;
-                    
-                    // 检查是否是空气动力部件
-                    var aeroModules2 = parts[j].GetModules<AeroModule>();
-                    if (aeroModules2 != null && aeroModules2.Length > 0)
-                    {
-                        // 空气动力部件不计算干扰阻力
-                        continue;
-                    }
-                    
-                    Vector2 interference = CalculatePartInterference(parts[i], parts[j], location, velocity);
-                    totalInterferenceDrag += interference.magnitude;
+                    var pj = parts[j];
+                    if (pj == null) continue;
+                    var aero2 = pj.GetModules<AeroModule>();
+                    if (aero2 != null && aero2.Length > 0) continue;
+                    Vector2 interference = CalculatePartInterference(pi, pj, location, velocity);
+                    total += interference.magnitude;
                 }
             }
-            
-            return dragDirection * totalInterferenceDrag * WaterSettingsManager.settings.interferenceDragCoefficient;
+            string planetNameForInterf = location?.planet?.Value?.codeName;
+            double currentWaterDensityForInterf = waterDensity;
+            if (!string.IsNullOrEmpty(planetNameForInterf))
+            {
+                WaterData waterDataForInterf = WaterManager.GetPlanetWater(planetNameForInterf);
+                if (waterDataForInterf != null && waterDataForInterf.waterDensity > 0)
+                    currentWaterDensityForInterf = waterDataForInterf.waterDensity;
+            }
+            return dragDirection * total * WaterSettingsManager.settings.interferenceDragCoefficient * (float)currentWaterDensityForInterf;
         }
 
         // 计算角阻力（所有部件都计算）
@@ -389,13 +609,18 @@ namespace WaterMod
             if (rocket?.rb2d == null) return 0f;
             
             float angularVelocity = rocket.rb2d.angularVelocity;
-            if (Mathf.Abs(angularVelocity) < 0.1f) return 0f;
+            // 使用更平滑的阈值，避免突然的跳跃
+            if (Mathf.Abs(angularVelocity) < 0.01f) return 0f;
             
             float totalAngularDrag = 0f;
             
             foreach (Part part in rocket.partHolder.parts)
             {
                 if (part == null) continue;
+                
+                // 只计算完全或大部分在水下的部件，避免部分浸入导致的不稳定
+                float underwaterRatio = GetPartUnderwaterRatio(part, location);
+                if (underwaterRatio < 0.3f) continue; // 只有至少30%在水下才产生角阻力
                 
                 // 所有部件都计算角阻力，但系数不同
                 float angularDragCoefficient = WaterSettingsManager.settings.angularDragCoefficient;
@@ -409,9 +634,9 @@ namespace WaterMod
                 }
                 
                 float partVolume = GetPartVolume(part);
-                float underwaterRatio = GetPartUnderwaterRatio(part, location);
                 float distanceFromCenter = Vector2.Distance(part.transform.position, rocket.transform.position);
                 
+                // 使用线性关系，但通过underwaterRatio来平滑过渡
                 float partAngularDrag = Mathf.Abs(angularVelocity) * partVolume * underwaterRatio * 
                                       distanceFromCenter * angularDragCoefficient;
                 
@@ -442,16 +667,10 @@ namespace WaterMod
                 Vector2 partPosition = part.transform.position;
                 Vector2 relativePosition = partPosition - rocketCenter;
                 
-                // 计算力矩：τ = r × F (2D叉积)
-                // 浮力向上，所以只考虑x方向的偏移产生的力矩
+                // 计算力矩：τ = r × F (2D叉积，简化版：只考虑垂直浮力产生的力矩)
+                // 对于垂直向上的浮力 F = (0, Fy)，力矩 τ = r.x * F.y - r.y * F.x = r.x * F.y
+                // 这是标准的力矩计算，不需要反转方向
                 float torque = relativePosition.x * buoyancyForce.y;
-                
-                // 添加稳定性修正：让船倾向于保持水平
-                // 如果右侧浮力更大，应该产生负力矩（顺时针）来平衡
-                if (relativePosition.x > 0f && buoyancyForce.y > 0f)
-                {
-                    torque = -torque; // 反转力矩方向
-                }
                 
                 // 检查是否是空气动力部件
                 var aeroModules = part.GetModules<AeroModule>();
@@ -869,6 +1088,13 @@ namespace WaterMod
             // 计算并应用净力（浮力 + 重力）
             Vector2 netForce = CalculateNetForce(rocket, location);
             rocket.rb2d.AddForce(netForce);
+        
+            if (IsInWater(location))
+            {
+                Vector2 linearDrag = CalculateLinearDrag(rocket, location);
+                if (linearDrag.sqrMagnitude > 0f)
+                    rocket.rb2d.AddForce(linearDrag);
+            }
             
             // 计算并应用角阻力
             float angularDrag = CalculateAngularDrag(rocket, location);
