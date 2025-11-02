@@ -11,13 +11,13 @@ namespace WaterMod
         public bool enableDebugLogs = false;
         
         // 浮力相关参数
-        public float globalBuoyancyMultiplier = 0.0045f;      
+        public float globalBuoyancyMultiplier = 0.002f;      
         public float defaultBuoyancyIndex = 1.02f;         
         public float engineBuoyancyIndex = 0.05f;
         public float boosterBuoyancyIndex = 0.1f;
         public float resourceBuoyancyIndex = 1.2f;
         public float aeroBuoyancyIndex = 1.2f;  
-        public float fairingBuoyancyIndex = 1.5f;  
+        public float fairingBuoyancyIndex = 1.2f;  
         public float separatorBuoyancyIndex = 1.15f;
         public float dockingPortBuoyancyIndex = 1.1f;
         public float rcsBuoyancyIndex = 1.1f;
@@ -39,8 +39,8 @@ namespace WaterMod
         // 水撞击爆炸/解体相关
         public bool enableWaterExplosion = true;          // 是否启用撞击水爆炸
         public bool enableWaterDisintegration = true;     // 是否启用撞击水解体
-        public float waterExplosionThreshold = 200;      // 水撞击爆炸阈值 (m/s)
-        public float waterDisintegrationThreshold = 100f; // 水撞击解体阈值 (m/s)
+        public float waterExplosionThreshold = 200f;      // 水撞击爆炸阈值 (m/s)
+        public float waterDisintegrationThreshold = 50f; // 水撞击解体阈值 (m/s)
         public float baseDetachmentProbability = 0.2f;    // 部件基础脱离概率 (0-1)
 
         // 浮力矩相关

@@ -21,7 +21,7 @@ namespace WaterMod
                 return;
 
             // 创建水纹理
-            Texture2D waterTexture = CreateWaterTexture(waterData, codeName);
+            Texture2D waterTexture = CreateWaterTexture(waterData, codeName, data, log);
             if (waterTexture != null)
             {
                 // 将水纹理应用到星球的地形材质
@@ -29,7 +29,7 @@ namespace WaterMod
             }
         }
 
-        private static Texture2D CreateWaterTexture(WaterData waterData, string planetName)
+        private static Texture2D CreateWaterTexture(WaterData waterData, string planetName, PlanetData planetData, I_MsgLogger log)
         {
             try
             {
@@ -42,7 +42,7 @@ namespace WaterMod
                 }
 
                 // 获取原始地形纹理
-                Texture2D originalTerrainTexture = GetOriginalTerrainTexture(planetName);
+                Texture2D originalTerrainTexture = GetOriginalTerrainTexture(planetName, planetData, log);
                 if (originalTerrainTexture == null)
                 {
                     Debug.LogWarning($"[WaterMod] Could not get original terrain texture for planet: {planetName}");
@@ -217,18 +217,21 @@ namespace WaterMod
         }
 
         // 获取原始地形纹理
-        private static Texture2D GetOriginalTerrainTexture(string planetName)
+        private static Texture2D GetOriginalTerrainTexture(string planetName, PlanetData planetData, I_MsgLogger log)
         {
             try
             {
-                // 首先尝试从当前星球的terrainMaterial获取已经处理过的纹理
-                Planet currentPlanet = FindPlanetByName(planetName);
-                if (currentPlanet != null && currentPlanet.terrainMaterial != null)
+                // 尝试从PlanetLoader获取纹理（这是最可靠的方式）
+                if (SFS.Base.planetLoader != null && planetData != null && planetData.hasTerrain && planetData.terrain != null)
                 {
-                    Texture2D processedTexture = currentPlanet.terrainMaterial.GetTexture("_PlanetTexture") as Texture2D;
-                    if (processedTexture != null)
+                    var textureName = planetData.terrain.TERRAIN_TEXTURE_DATA?.planetTexture;
+                    if (!string.IsNullOrEmpty(textureName))
                     {
-                        return processedTexture;
+                        Texture2D loaderTexture = SFS.Base.planetLoader.GetTexture(textureName, log);
+                        if (loaderTexture != null && !loaderTexture.name.Contains("WaterTexture"))
+                        {
+                            return loaderTexture;
+                        }
                     }
                 }
 

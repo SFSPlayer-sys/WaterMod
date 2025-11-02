@@ -100,10 +100,20 @@ namespace WaterMod
         }
     }
 
-    // 添加对PlanetLoader的补丁
     [HarmonyPatch(typeof(PlanetLoader), "LoadPlanets_Public")]
     public class PlanetLoader_LoadPlanets_Public_Patch
     {
+        [HarmonyPrefix]
+        public static void LoadPlanets_Public_Prefix(SolarSystemReference solarSystem)
+        {
+            WaterManager.ClearAll();
+            
+            if (WaterSettingsManager.settings != null && WaterSettingsManager.settings.enableDebugLogs)
+            {
+                Debug.Log($"[WaterMod] Cleared previous water data before loading solar system: {solarSystem.name}");
+            }
+        }
+        
         [HarmonyPostfix]
         public static void LoadPlanets_Public_Postfix(SolarSystemReference solarSystem, Dictionary<string, PlanetData> outputPlanetData, I_MsgLogger log)
         {
@@ -155,7 +165,7 @@ namespace WaterMod
         }
     }
 
-    // 水域数据类
+    // 水数据
     [System.Serializable]
     public class WaterData
     {
